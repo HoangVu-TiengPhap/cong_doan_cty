@@ -1,0 +1,315 @@
+<!DOCTYPE html>
+<html lang="vi">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Hệ thống Bầu cử Công đoàn (Firebase)</title>
+
+    <style>
+      body {
+        font-family: Arial, sans-serif;
+        margin: 20px;
+        background-color: #f4f4f4;
+      }
+      #employee-list {
+        list-style: none;
+        padding: 0;
+      }
+      #employee-list li {
+        background: #fff;
+        padding: 10px;
+        margin-bottom: 5px;
+        border-radius: 4px;
+        box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+        transition: background 0.2s;
+      }
+      #employee-list li:hover {
+        background: #eef;
+      }
+      #login-section,
+      #voting-section,
+      #results-section {
+        background: #fff;
+        padding: 20px;
+        border-radius: 8px;
+        margin-bottom: 20px;
+      }
+      #top-five-list li {
+        margin-bottom: 10px;
+        font-size: 1.1em;
+        padding: 5px;
+        border-bottom: 1px solid #eee;
+      }
+    </style>
+    <script src="https://www.gstatic.com/firebasejs/7.20.0/firebase-app.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/7.20.0/firebase-firestore.js"></script>
+  </head>
+  <body>
+    <div id="login-section">
+      <h2>Đăng nhập để Bầu chọn</h2>
+      <label for="voter-id">ID Nhân viên của bạn:</label>
+      <input type="text" id="voter-id" placeholder="Nhập ID (Ví dụ: 0001)" />
+      <button onclick="login()">Đăng nhập</button>
+      <p id="login-status" style="color: red"></p>
+    </div>
+
+    <div id="voting-section" style="display: none">
+      <h1>Bầu chọn Ban Chấp hành Công đoàn (Chọn tối đa 5 người)</h1>
+      <form id="vote-form" onsubmit="submitVotes(event)">
+        <ul id="employee-list"></ul>
+        <p id="selection-count">Đã chọn: 0/5</p>
+        <button type="submit" disabled id="submit-button">Gửi Phiếu Bầu</button>
+      </form>
+    </div>
+
+    <hr />
+
+    <div id="results-section">
+      <h2>Kết quả Bầu cử (5 Ứng viên Dẫn đầu)</h2>
+      <ol id="top-five-list"></ol>
+      <p>Kết quả được cập nhật theo thời gian thực.</p>
+    </div>
+
+    <script>
+      // Cấu hình Firebase của bạn
+      // For Firebase JS SDK v7.20.0 and later, measurementId is optional
+      const firebaseConfig = {
+        apiKey: "AIzaSyBuDOvyGwVQByN_U9wD9t732MTFVzGrVuI",
+        authDomain: "quick-function-473414-s4.firebaseapp.com",
+        projectId: "quick-function-473414-s4",
+        storageBucket: "quick-function-473414-s4.firebasestorage.app",
+        messagingSenderId: "167302920755",
+        appId: "1:167302920755:web:92a2a1c84d8e9406060146",
+        measurementId: "G-5Q87ECYLGS",
+      };
+
+      // Khởi tạo Firebase và Firestore
+      let db;
+      try {
+        firebase.initializeApp(firebaseConfig);
+        db = firebase.firestore();
+      } catch (error) {
+        console.error(
+          "Lỗi khởi tạo Firebase. Vui lòng kiểm tra API Key và Project ID:",
+          error
+        );
+      }
+
+      const employees = [];
+      for (let i = 1; i <= 100; i++) {
+        const id = String(i).padStart(4, "0");
+        employees.push({
+          id: id,
+          name: `Nhân viên ${i}`,
+        });
+      }
+
+      const MAX_SELECTIONS = 5;
+      let currentVoterId = null;
+
+      // Hàm tạo danh sách trên HTML
+      function renderEmployeeList() {
+        const ul = document.getElementById("employee-list");
+        ul.innerHTML = "";
+
+        employees.forEach((emp) => {
+          const li = document.createElement("li");
+          li.innerHTML = `
+                    <input type="checkbox" id="emp-${emp.id}" name="candidate" value="${emp.id}" onchange="checkSelectionLimit()">
+                    <label for="emp-${emp.id}">[${emp.id}] - ${emp.name}</label>
+                `;
+          ul.appendChild(li);
+        });
+      }
+
+      // HÀM LOGIN ĐÃ ĐƯỢC ỔN ĐỊNH VÀ ĐƠN GIẢN HÓA LOGIC ASYNC
+      async function login() {
+        const inputId = document.getElementById("voter-id").value.trim();
+        const loginStatus = document.getElementById("login-status");
+
+        if (!db) {
+          loginStatus.textContent = "Lỗi hệ thống: Không thể kết nối Database.";
+          return;
+        }
+
+        const employeeExists = employees.some((e) => e.id === inputId);
+
+        if (!employeeExists) {
+          loginStatus.textContent = "ID không hợp lệ. Vui lòng thử lại.";
+          document.getElementById("voting-section").style.display = "none";
+          return;
+        }
+
+        // --- BẮT ĐẦU KIỂM TRA BẦU CỬ ---
+        try {
+          // Kiểm tra xem ID này đã bầu chưa trong Firestore
+          const voterDoc = await db.collection("voters").doc(inputId).get();
+
+          if (voterDoc.exists) {
+            loginStatus.textContent = `Bạn (${inputId}) đã hoàn thành việc bầu cử.`;
+            loginStatus.style.color = "blue";
+            document.getElementById("voting-section").style.display = "none";
+            document.getElementById("login-section").style.display = "none";
+            return;
+          }
+        } catch (error) {
+          // Nếu lỗi xảy ra (vd: Rules chặn đọc), chúng ta sẽ báo lỗi và không hiển thị form
+          console.error("LỖI SECURITY RULES hoặc KẾT NỐI:", error);
+          loginStatus.textContent =
+            "Lỗi kiểm tra ID bầu cử. Vui lòng kiểm tra Quy tắc bảo mật (F12).";
+          return;
+        }
+
+        // Đăng nhập thành công và chưa bầu
+        currentVoterId = inputId;
+        document.getElementById("login-section").style.display = "none";
+        document.getElementById("voting-section").style.display = "block";
+        loginStatus.textContent = `Chào mừng, ${inputId}. Vui lòng chọn 5 ứng viên.`;
+        loginStatus.style.color = "green";
+      }
+
+      // Hàm giới hạn lựa chọn (vẫn giữ nguyên)
+      function checkSelectionLimit() {
+        const checkboxes = document.querySelectorAll(
+          '#employee-list input[type="checkbox"]'
+        );
+        let selectedCount = 0;
+
+        checkboxes.forEach((cb) => {
+          if (cb.checked) {
+            selectedCount++;
+          }
+        });
+
+        document.getElementById(
+          "selection-count"
+        ).textContent = `Đã chọn: ${selectedCount}/${MAX_SELECTIONS}`;
+
+        if (selectedCount >= MAX_SELECTIONS) {
+          checkboxes.forEach((cb) => {
+            if (!cb.checked) {
+              cb.disabled = true;
+            }
+          });
+        } else {
+          checkboxes.forEach((cb) => {
+            cb.disabled = false;
+          });
+        }
+
+        const submitButton = document.getElementById("submit-button");
+        submitButton.disabled = selectedCount !== MAX_SELECTIONS;
+      }
+
+      // HÀM GỬI PHIẾU BẦU (vẫn giữ nguyên)
+      async function submitVotes(event) {
+        event.preventDefault();
+
+        if (!currentVoterId || !db) {
+          alert("Lỗi: Hệ thống chưa sẵn sàng hoặc chưa đăng nhập!");
+          return;
+        }
+
+        const selectedIds = [];
+        const checkboxes = document.querySelectorAll(
+          '#employee-list input[type="checkbox"]:checked'
+        );
+
+        if (checkboxes.length !== MAX_SELECTIONS) {
+          alert(`Vui lòng chọn đủ ${MAX_SELECTIONS} ứng viên.`);
+          return;
+        }
+
+        checkboxes.forEach((cb) => {
+          selectedIds.push(cb.value);
+        });
+
+        const batch = db.batch();
+
+        const voterRef = db.collection("voters").doc(currentVoterId);
+        batch.set(voterRef, {
+          voted: true,
+          timestamp: firebase.firestore.FieldValue.serverTimestamp(),
+        });
+
+        selectedIds.forEach((candidateId) => {
+          const candidateRef = db.collection("candidates").doc(candidateId);
+          batch.set(
+            candidateRef,
+            { votes: firebase.firestore.FieldValue.increment(1) },
+            { merge: true }
+          );
+        });
+
+        try {
+          await batch.commit();
+          alert(
+            `Cảm ơn bạn [${currentVoterId}]! Phiếu bầu đã được ghi nhận vào hệ thống.`
+          );
+          document.getElementById("voting-section").innerHTML =
+            "<h2>Bạn đã hoàn thành việc bầu cử. Cảm ơn!</h2>";
+        } catch (e) {
+          console.error("Lỗi khi gửi phiếu bầu:", e);
+          alert(
+            "Có lỗi xảy ra trong quá trình gửi phiếu. Vui lòng kiểm tra Console."
+          );
+        }
+      }
+
+      // HÀM CẬP NHẬT KẾT QUẢ THEO THỜI GIAN THỰC (vẫn giữ nguyên)
+      function setupRealtimeResults() {
+        if (!db) return;
+
+        db.collection("candidates")
+          .orderBy("votes", "desc")
+          .limit(5)
+          .onSnapshot(
+            (snapshot) => {
+              const topFive = [];
+              snapshot.forEach((doc) => {
+                const data = doc.data();
+                const emp = employees.find((e) => e.id === doc.id);
+
+                topFive.push({
+                  id: doc.id,
+                  votes: data.votes || 0,
+                  name: emp ? emp.name : `Ứng viên ${doc.id}`,
+                });
+              });
+
+              const ol = document.getElementById("top-five-list");
+              ol.innerHTML = "";
+
+              if (
+                topFive.length === 0 ||
+                topFive.every((emp) => emp.votes === 0)
+              ) {
+                ol.innerHTML = "<li>Chưa có phiếu bầu nào được ghi nhận.</li>";
+                return;
+              }
+
+              topFive.forEach((emp, index) => {
+                const li = document.createElement("li");
+                li.innerHTML = `
+                            <strong>Hạng ${index + 1}:</strong> ${emp.name} (${
+                  emp.id
+                }) - <span style="color: blue;">${emp.votes} phiếu</span>
+                        `;
+                ol.appendChild(li);
+              });
+            },
+            (error) => {
+              console.error("Lỗi lắng nghe kết quả:", error);
+              document.getElementById("top-five-list").innerHTML =
+                "<li>Lỗi tải kết quả bầu cử. (Xem Console F12)</li>";
+            }
+          );
+      }
+
+      // --- KHỞI TẠO CUỐI CÙNG ---
+      // Đảm bảo danh sách được tạo ra và lắng nghe kết quả khi trang tải.
+      renderEmployeeList();
+      setupRealtimeResults();
+    </script>
+  </body>
+</html>
