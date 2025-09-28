@@ -72,7 +72,6 @@
 
     <script>
       // Cấu hình Firebase của bạn
-      // For Firebase JS SDK v7.20.0 and later, measurementId is optional
       const firebaseConfig = {
         apiKey: "AIzaSyBuDOvyGwVQByN_U9wD9t732MTFVzGrVuI",
         authDomain: "quick-function-473414-s4.firebaseapp.com",
@@ -95,19 +94,71 @@
         );
       }
 
-      const employees = [];
-      for (let i = 1; i <= 100; i++) {
-        const id = String(i).padStart(4, "0");
-        employees.push({
-          id: id,
-          name: `Nhân viên ${i}`,
-        });
-      }
-
+      // Mảng nhân viên được khởi tạo rỗng, sẽ được điền từ CSV
+      const employees = []; 
       const MAX_SELECTIONS = 5;
       let currentVoterId = null;
 
-      // Hàm tạo danh sách trên HTML
+      // HÀM MỚI: Tải và phân tích cú pháp CSV
+      async function loadEmployeesFromCSV() {
+        try {
+          // Giao diện người dùng sẽ thấy thông báo này trong khi tải
+          document.getElementById('login-status').textContent = 'Đang tải danh sách nhân viên...';
+          document.getElementById('login-status').style.color = 'orange';
+
+          // Giả sử file 'employees.csv' nằm cùng thư mục
+          const response = await fetch('employees.csv');
+          
+          if (!response.ok) {
+              throw new Error(`Không tìm thấy file hoặc lỗi mạng: ${response.status}`);
+          }
+
+          const csvText = await response.text();
+          
+          // Phân tích cú pháp CSV đơn giản (bỏ qua dòng tiêu đề)
+          const lines = csvText.trim().split('\n');
+          
+          // Bắt đầu từ dòng 1 để bỏ qua dòng tiêu đề (ID,Name)
+          for (let i = 1; i < lines.length; i++) {
+              const line = lines[i].trim();
+              if (line) {
+                  // Sử dụng regex để phân tách nếu tên có dấu phẩy (CSV cơ bản)
+                  const parts = line.split(/,(?=(?:(?:[^"]*"){2})*[^"]*$)/);
+                  
+                  // Giả sử ID là cột 1, Name là cột 2
+                  const id = parts[0] ? parts[0].trim().replace(/"/g, '') : '';
+                  const name = parts[1] ? parts[1].trim().replace(/"/g, '') : '';
+
+                  if (id && name) {
+                      employees.push({
+                          id: id,
+                          name: name
+                      });
+                  }
+              }
+          }
+
+          if (employees.length > 0) {
+            console.log(`Đã tải thành công ${employees.length} nhân viên từ CSV.`);
+            document.getElementById('login-status').textContent = 'Vui lòng Đăng nhập.';
+            document.getElementById('login-status').style.color = 'red';
+          } else {
+            document.getElementById('login-status').textContent = 'LỖI: CSV trống hoặc không có dữ liệu hợp lệ.';
+          }
+          
+          // Sau khi tải dữ liệu, render danh sách và bắt đầu lắng nghe kết quả
+          renderEmployeeList(); 
+          setupRealtimeResults();
+
+        } catch (error) {
+          console.error("LỖI KHÔNG THỂ TẢI HOẶC PHÂN TÍCH CSV:", error);
+          document.getElementById('login-status').textContent = 
+            "LỖI: Không thể tải danh sách. Vui lòng kiểm tra file 'employees.csv' (F12).";
+        }
+      }
+
+
+      // Hàm tạo danh sách trên HTML (không đổi)
       function renderEmployeeList() {
         const ul = document.getElementById("employee-list");
         ul.innerHTML = "";
@@ -122,7 +173,7 @@
         });
       }
 
-      // HÀM LOGIN ĐÃ ĐƯỢC ỔN ĐỊNH VÀ ĐƠN GIẢN HÓA LOGIC ASYNC
+      // HÀM LOGIN (không đổi)
       async function login() {
         const inputId = document.getElementById("voter-id").value.trim();
         const loginStatus = document.getElementById("login-status");
@@ -130,6 +181,12 @@
         if (!db) {
           loginStatus.textContent = "Lỗi hệ thống: Không thể kết nối Database.";
           return;
+        }
+        
+        // Kiểm tra xem dữ liệu CSV đã được tải chưa
+        if (employees.length === 0) {
+             loginStatus.textContent = "Đang tải dữ liệu. Vui lòng đợi hoặc kiểm tra file CSV.";
+             return;
         }
 
         const employeeExists = employees.some((e) => e.id === inputId);
@@ -140,9 +197,8 @@
           return;
         }
 
-        // --- BẮT ĐẦU KIỂM TRA BẦU CỬ ---
+        // --- BẮT ĐẦU KIỂM TRA BẦU CỬ TRONG collection "voters" ---
         try {
-          // Kiểm tra xem ID này đã bầu chưa trong Firestore
           const voterDoc = await db.collection("voters").doc(inputId).get();
 
           if (voterDoc.exists) {
@@ -153,7 +209,6 @@
             return;
           }
         } catch (error) {
-          // Nếu lỗi xảy ra (vd: Rules chặn đọc), chúng ta sẽ báo lỗi và không hiển thị form
           console.error("LỖI SECURITY RULES hoặc KẾT NỐI:", error);
           loginStatus.textContent =
             "Lỗi kiểm tra ID bầu cử. Vui lòng kiểm tra Quy tắc bảo mật (F12).";
@@ -168,7 +223,7 @@
         loginStatus.style.color = "green";
       }
 
-      // Hàm giới hạn lựa chọn (vẫn giữ nguyên)
+      // Hàm giới hạn lựa chọn (không đổi)
       function checkSelectionLimit() {
         const checkboxes = document.querySelectorAll(
           '#employee-list input[type="checkbox"]'
@@ -201,7 +256,7 @@
         submitButton.disabled = selectedCount !== MAX_SELECTIONS;
       }
 
-      // HÀM GỬI PHIẾU BẦU (vẫn giữ nguyên)
+      // HÀM GỬI PHIẾU BẦU (SỬ DỤNG "employees")
       async function submitVotes(event) {
         event.preventDefault();
 
@@ -233,7 +288,8 @@
         });
 
         selectedIds.forEach((candidateId) => {
-          const candidateRef = db.collection("candidates").doc(candidateId);
+          // Tham chiếu đến collection "employees"
+          const candidateRef = db.collection("employees").doc(candidateId);
           batch.set(
             candidateRef,
             { votes: firebase.firestore.FieldValue.increment(1) },
@@ -256,11 +312,12 @@
         }
       }
 
-      // HÀM CẬP NHẬT KẾT QUẢ THEO THỜI GIAN THỰC (vẫn giữ nguyên)
+      // HÀM CẬP NHẬT KẾT QUẢ THEO THỜI GIAN THỰC (SỬ DỤNG "employees")
       function setupRealtimeResults() {
         if (!db) return;
 
-        db.collection("candidates")
+        // Tham chiếu đến collection "employees"
+        db.collection("employees")
           .orderBy("votes", "desc")
           .limit(5)
           .onSnapshot(
@@ -307,9 +364,8 @@
       }
 
       // --- KHỞI TẠO CUỐI CÙNG ---
-      // Đảm bảo danh sách được tạo ra và lắng nghe kết quả khi trang tải.
-      renderEmployeeList();
-      setupRealtimeResults();
+      // Bắt đầu tải CSV và sau đó render/lắng nghe
+      loadEmployeesFromCSV();
     </script>
   </body>
 </html>
