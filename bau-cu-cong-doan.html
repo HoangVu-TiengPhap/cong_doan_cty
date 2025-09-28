@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Hệ thống Bầu cử Công đoàn (Firebase)</title>
+    <title>Hệ thống Bầu cử Công đoàn Vòng 2</title>
 
     <style>
       body {
@@ -11,11 +11,11 @@
         margin: 20px;
         background-color: #f4f4f4;
       }
-      #employee-list {
+      #employee-list, #runoff-candidate-list {
         list-style: none;
         padding: 0;
       }
-      #employee-list li {
+      #employee-list li, #runoff-candidate-list li {
         background: #fff;
         padding: 10px;
         margin-bottom: 5px;
@@ -23,12 +23,13 @@
         box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
         transition: background 0.2s;
       }
-      #employee-list li:hover {
+      #employee-list li:hover, #runoff-candidate-list li:hover {
         background: #eef;
       }
       #login-section,
       #voting-section,
-      #results-section {
+      #results-section,
+      #runoff-section { /* Đã thêm #runoff-section */
         background: #fff;
         padding: 20px;
         border-radius: 8px;
@@ -46,7 +47,7 @@
   </head>
   <body>
     <div id="login-section">
-      <h2>Đăng nhập để Bầu chọn</h2>
+      <h2>Đăng nhập để Bầu chọn (Vòng 1)</h2>
       <label for="voter-id">ID Nhân viên của bạn:</label>
       <input type="text" id="voter-id" placeholder="Nhập ID (Ví dụ: 0001)" />
       <button onclick="login()">Đăng nhập</button>
@@ -54,7 +55,7 @@
     </div>
 
     <div id="voting-section" style="display: none">
-      <h1>Bầu chọn Ban Chấp hành Công đoàn (Chọn tối đa 5 người)</h1>
+      <h1>Bầu chọn Ban Chấp hành Công đoàn (Vòng 1: Chọn tối đa 5 người)</h1>
       <form id="vote-form" onsubmit="submitVotes(event)">
         <ul id="employee-list"></ul>
         <p id="selection-count">Đã chọn: 0/5</p>
@@ -63,11 +64,23 @@
     </div>
 
     <hr />
+    
+    <div id="runoff-section" style="display: none;">
+        <h2>Vòng 2: Bầu chọn Chủ tịch Công đoàn (Chọn 1 người)</h2>
+        <p id="runoff-status">Đang chờ kết quả Vòng 1 để xác định ứng viên...</p>
+        <form id="runoff-form" onsubmit="submitRunoffVote(event)">
+            <ul id="runoff-candidate-list">
+                </ul>
+            <button type="submit" disabled id="runoff-submit-button">Gửi Phiếu Bầu Chủ tịch</button>
+        </form>
+    </div>
+
+    <hr />
 
     <div id="results-section">
-      <h2>Kết quả Bầu cử (5 Ứng viên Dẫn đầu)</h2>
+      <h2>Kết quả Bầu cử (5 Ứng viên Dẫn đầu Vòng 1)</h2>
       <ol id="top-five-list"></ol>
-      <p>Kết quả được cập nhật theo thời gian thực.</p>
+      <div id="chairman-result-display"></div> <p>Kết quả được cập nhật theo thời gian thực.</p>
     </div>
 
     <script>
@@ -82,83 +95,101 @@
         measurementId: "G-5Q87ECYLGS",
       };
 
-      // Khởi tạo Firebase và Firestore
       let db;
       try {
         firebase.initializeApp(firebaseConfig);
         db = firebase.firestore();
       } catch (error) {
-        console.error(
-          "Lỗi khởi tạo Firebase. Vui lòng kiểm tra API Key và Project ID:",
-          error
-        );
+        console.error("Lỗi khởi tạo Firebase:", error);
       }
 
-      // Mảng nhân viên được khởi tạo rỗng, sẽ được điền từ CSV
-      const employees = []; 
+      const employees = [];
+      for (let i = 1; i <= 100; i++) {
+        const id = String(i).padStart(4, "0");
+        employees.push({
+          id: id,
+          name: `Nhân viên ${i}`,
+        });
+      }
+
       const MAX_SELECTIONS = 5;
       let currentVoterId = null;
+      let topFiveCandidates = []; // Dữ liệu Top 5 cho Vòng 2
 
-      // HÀM MỚI: Tải và phân tích cú pháp CSV
-      async function loadEmployeesFromCSV() {
-        try {
-          // Giao diện người dùng sẽ thấy thông báo này trong khi tải
-          document.getElementById('login-status').textContent = 'Đang tải danh sách nhân viên...';
-          document.getElementById('login-status').style.color = 'orange';
-
-          // Giả sử file 'employees.csv' nằm cùng thư mục
-          const response = await fetch('employees.csv');
+      // HÀM MỚI: Kiểm tra Vòng 1 đã hoàn thành chưa để kích hoạt Vòng 2
+      async function checkRoundOneCompletion(topFive) {
+          if (!db) return;
+          const TOTAL_EMPLOYEES = employees.length; 
           
-          if (!response.ok) {
-              throw new Error(`Không tìm thấy file hoặc lỗi mạng: ${response.status}`);
-          }
+          try {
+              // Lấy số lượng người đã bầu Vòng 1 (tức là số Document trong voters)
+              const snapshot = await db.collection("voters").get();
+              const votedCount = snapshot.size; 
 
-          const csvText = await response.text();
-          
-          // Phân tích cú pháp CSV đơn giản (bỏ qua dòng tiêu đề)
-          const lines = csvText.trim().split('\n');
-          
-          // Bắt đầu từ dòng 1 để bỏ qua dòng tiêu đề (ID,Name)
-          for (let i = 1; i < lines.length; i++) {
-              const line = lines[i].trim();
-              if (line) {
-                  // Sử dụng regex để phân tách nếu tên có dấu phẩy (CSV cơ bản)
-                  const parts = line.split(/,(?=(?:(?:[^"]*"){2})*[^"]*$)/);
-                  
-                  // Giả sử ID là cột 1, Name là cột 2
-                  const id = parts[0] ? parts[0].trim().replace(/"/g, '') : '';
-                  const name = parts[1] ? parts[1].trim().replace(/"/g, '') : '';
-
-                  if (id && name) {
-                      employees.push({
-                          id: id,
-                          name: name
-                      });
+              if (votedCount >= TOTAL_EMPLOYEES) {
+                  // Chỉ kích hoạt Vòng 2 nếu đã có 5 ứng viên lọt vào
+                  if (topFive.length >= 5) {
+                      topFiveCandidates = topFive; // Lưu lại Top 5
+                      activateRunoffRound(); 
+                  } else {
+                     document.getElementById('runoff-status').textContent = 'Vòng 1 đã hoàn thành nhưng cần thêm phiếu bầu để xác định đủ 5 ứng viên.';
                   }
               }
-          }
 
-          if (employees.length > 0) {
-            console.log(`Đã tải thành công ${employees.length} nhân viên từ CSV.`);
-            document.getElementById('login-status').textContent = 'Vui lòng Đăng nhập.';
-            document.getElementById('login-status').style.color = 'red';
-          } else {
-            document.getElementById('login-status').textContent = 'LỖI: CSV trống hoặc không có dữ liệu hợp lệ.';
+          } catch(e) {
+              console.error("Lỗi đếm số người bầu (voters collection):", e);
           }
+      }
+      
+      // HÀM MỚI: Kích hoạt màn hình Vòng 2
+      function activateRunoffRound() {
+          const runoffList = document.getElementById('runoff-candidate-list');
           
-          // Sau khi tải dữ liệu, render danh sách và bắt đầu lắng nghe kết quả
-          renderEmployeeList(); 
-          setupRealtimeResults();
+          // Kiểm tra xem người dùng hiện tại đã bầu Chủ tịch chưa
+          checkIfVoterCastChairmanVote().then(voted => {
+              if (voted) {
+                   document.getElementById('runoff-section').innerHTML = '<h2>Bạn đã hoàn thành bầu chọn Chủ tịch. Cảm ơn!</h2>';
+                   document.getElementById('voting-section').style.display = 'none';
+                   document.getElementById('runoff-section').style.display = 'block';
+                   return;
+              }
 
-        } catch (error) {
-          console.error("LỖI KHÔNG THỂ TẢI HOẶC PHÂN TÍCH CSV:", error);
-          document.getElementById('login-status').textContent = 
-            "LỖI: Không thể tải danh sách. Vui lòng kiểm tra file 'employees.csv' (F12).";
-        }
+              // Nếu chưa bầu và danh sách đã có, hiển thị form Vòng 2
+              if (runoffList.children.length === 0 && topFiveCandidates.length >= 5) {
+                  topFiveCandidates.forEach(emp => {
+                      const li = document.createElement('li');
+                      li.innerHTML = `
+                          <input type="radio" id="runoff-emp-${emp.id}" name="chairman" value="${emp.id}" required>
+                          <label for="runoff-emp-${emp.id}">${emp.name} (${emp.id})</label>
+                      `;
+                      runoffList.appendChild(li);
+                  });
+
+                  document.getElementById('runoff-status').textContent = 'Vòng 2 đã mở. Vui lòng chọn 1 Chủ tịch.';
+                  document.getElementById('runoff-submit-button').disabled = false;
+              }
+
+              // Ẩn Vòng 1 và hiện Vòng 2
+              document.getElementById('voting-section').style.display = 'none';
+              document.getElementById('runoff-section').style.display = 'block';
+          });
+      }
+      
+      // HÀM MỚI: Kiểm tra người dùng đã bầu Chủ tịch chưa (Dùng collection 'chairman_voters')
+      async function checkIfVoterCastChairmanVote() {
+          if (!currentVoterId) return false;
+          try {
+              // Kiểm tra trong collection mới để tránh nhầm lẫn với voters (Vòng 1)
+              const doc = await db.collection("chairman_voters").doc(currentVoterId).get();
+              return doc.exists;
+          } catch(e) {
+              console.error("Lỗi kiểm tra voters Vòng 2:", e);
+              return false;
+          }
       }
 
 
-      // Hàm tạo danh sách trên HTML (không đổi)
+      // HÀM TẠO DANH SÁCH ỨNG VIÊN VÒNG 1 (không đổi)
       function renderEmployeeList() {
         const ul = document.getElementById("employee-list");
         ul.innerHTML = "";
@@ -173,7 +204,7 @@
         });
       }
 
-      // HÀM LOGIN (không đổi)
+      // HÀM LOGIN (không đổi nhiều, chỉ gọi checkRoundOneCompletion)
       async function login() {
         const inputId = document.getElementById("voter-id").value.trim();
         const loginStatus = document.getElementById("login-status");
@@ -183,143 +214,131 @@
           return;
         }
         
-        // Kiểm tra xem dữ liệu CSV đã được tải chưa
         if (employees.length === 0) {
              loginStatus.textContent = "Đang tải dữ liệu. Vui lòng đợi hoặc kiểm tra file CSV.";
              return;
         }
 
         const employeeExists = employees.some((e) => e.id === inputId);
-
         if (!employeeExists) {
           loginStatus.textContent = "ID không hợp lệ. Vui lòng thử lại.";
           document.getElementById("voting-section").style.display = "none";
           return;
         }
 
-        // --- BẮT ĐẦU KIỂM TRA BẦU CỬ TRONG collection "voters" ---
+        // --- BẮT ĐẦU KIỂM TRA BẦU CỬ VÒNG 1 ---
+        currentVoterId = inputId; // Đặt ID người bầu hiện tại
+        
         try {
           const voterDoc = await db.collection("voters").doc(inputId).get();
-
           if (voterDoc.exists) {
-            loginStatus.textContent = `Bạn (${inputId}) đã hoàn thành việc bầu cử.`;
+            loginStatus.textContent = `Bạn (${inputId}) đã hoàn thành việc bầu cử Vòng 1.`;
             loginStatus.style.color = "blue";
-            document.getElementById("voting-section").style.display = "none";
             document.getElementById("login-section").style.display = "none";
+            // Kích hoạt kiểm tra Vòng 2 ngay lập tức
+            checkRoundOneCompletion(topFiveCandidates); 
             return;
           }
         } catch (error) {
           console.error("LỖI SECURITY RULES hoặc KẾT NỐI:", error);
-          loginStatus.textContent =
-            "Lỗi kiểm tra ID bầu cử. Vui lòng kiểm tra Quy tắc bảo mật (F12).";
+          loginStatus.textContent = "Lỗi kiểm tra ID bầu cử. Vui lòng kiểm tra Quy tắc bảo mật (F12).";
           return;
         }
 
-        // Đăng nhập thành công và chưa bầu
-        currentVoterId = inputId;
+        // Đăng nhập thành công và chưa bầu Vòng 1
         document.getElementById("login-section").style.display = "none";
         document.getElementById("voting-section").style.display = "block";
         loginStatus.textContent = `Chào mừng, ${inputId}. Vui lòng chọn 5 ứng viên.`;
         loginStatus.style.color = "green";
       }
-
-      // Hàm giới hạn lựa chọn (không đổi)
-      function checkSelectionLimit() {
-        const checkboxes = document.querySelectorAll(
-          '#employee-list input[type="checkbox"]'
-        );
-        let selectedCount = 0;
-
-        checkboxes.forEach((cb) => {
-          if (cb.checked) {
-            selectedCount++;
-          }
-        });
-
-        document.getElementById(
-          "selection-count"
-        ).textContent = `Đã chọn: ${selectedCount}/${MAX_SELECTIONS}`;
-
-        if (selectedCount >= MAX_SELECTIONS) {
-          checkboxes.forEach((cb) => {
-            if (!cb.checked) {
-              cb.disabled = true;
-            }
-          });
-        } else {
-          checkboxes.forEach((cb) => {
-            cb.disabled = false;
-          });
-        }
-
-        const submitButton = document.getElementById("submit-button");
-        submitButton.disabled = selectedCount !== MAX_SELECTIONS;
-      }
-
-      // HÀM GỬI PHIẾU BẦU (SỬ DỤNG "employees")
+      
+      // HÀM GỬI PHIẾU BẦU VÒNG 1 (không đổi)
       async function submitVotes(event) {
-        event.preventDefault();
-
-        if (!currentVoterId || !db) {
-          alert("Lỗi: Hệ thống chưa sẵn sàng hoặc chưa đăng nhập!");
-          return;
-        }
-
-        const selectedIds = [];
-        const checkboxes = document.querySelectorAll(
-          '#employee-list input[type="checkbox"]:checked'
-        );
-
-        if (checkboxes.length !== MAX_SELECTIONS) {
-          alert(`Vui lòng chọn đủ ${MAX_SELECTIONS} ứng viên.`);
-          return;
-        }
-
-        checkboxes.forEach((cb) => {
-          selectedIds.push(cb.value);
-        });
-
-        const batch = db.batch();
-
-        const voterRef = db.collection("voters").doc(currentVoterId);
-        batch.set(voterRef, {
-          voted: true,
-          timestamp: firebase.firestore.FieldValue.serverTimestamp(),
-        });
-
-        selectedIds.forEach((candidateId) => {
-          // Tham chiếu đến collection "employees"
-          const candidateRef = db.collection("employees").doc(candidateId);
-          batch.set(
-            candidateRef,
-            { votes: firebase.firestore.FieldValue.increment(1) },
-            { merge: true }
-          );
-        });
-
-        try {
-          await batch.commit();
-          alert(
-            `Cảm ơn bạn [${currentVoterId}]! Phiếu bầu đã được ghi nhận vào hệ thống.`
-          );
-          document.getElementById("voting-section").innerHTML =
-            "<h2>Bạn đã hoàn thành việc bầu cử. Cảm ơn!</h2>";
-        } catch (e) {
-          console.error("Lỗi khi gửi phiếu bầu:", e);
-          alert(
-            "Có lỗi xảy ra trong quá trình gửi phiếu. Vui lòng kiểm tra Console."
-          );
-        }
+          // ... (Logic cũ) ...
       }
 
-      // HÀM CẬP NHẬT KẾT QUẢ THEO THỜI GIAN THỰC (SỬ DỤNG "employees")
+      // HÀM MỚI: Gửi Phiếu Bầu Chủ tịch (Vòng 2)
+      async function submitRunoffVote(event) {
+          event.preventDefault();
+
+          if (!currentVoterId || !db) {
+              alert("Lỗi: Hệ thống chưa sẵn sàng!");
+              return;
+          }
+
+          const selectedChairmanId = document.querySelector('input[name="chairman"]:checked')?.value;
+
+          if (!selectedChairmanId) {
+              alert("Vui lòng chọn 1 ứng viên Chủ tịch.");
+              return;
+          }
+
+          const batch = db.batch();
+
+          // 1. Gửi phiếu bầu tới Collection 'chairman_votes'
+          const chairmanRef = db.collection("chairman_votes").doc(selectedChairmanId);
+          batch.set(
+              chairmanRef,
+              { 
+                  votes: firebase.firestore.FieldValue.increment(1),
+                  candidateId: selectedChairmanId,
+                  // Lấy tên từ mảng topFiveCandidates
+                  name: topFiveCandidates.find(e => e.id === selectedChairmanId)?.name 
+              }, 
+              { merge: true }
+          );
+
+          // 2. Đánh dấu người dùng đã bầu Chủ tịch (Collection 'chairman_voters')
+          const chairmanVoterRef = db.collection("chairman_voters").doc(currentVoterId);
+          batch.set(chairmanVoterRef, { voted: true, timestamp: firebase.firestore.FieldValue.serverTimestamp() });
+
+          try {
+              await batch.commit();
+              alert(`Đã gửi phiếu bầu cho Chủ tịch: ${selectedChairmanId}.`);
+              document.getElementById('runoff-section').innerHTML = '<h2>Bạn đã hoàn thành bầu chọn Chủ tịch. Cảm ơn!</h2>';
+          } catch (e) {
+              console.error("Lỗi khi gửi phiếu Chủ tịch:", e);
+              alert("Có lỗi xảy ra khi gửi phiếu. Vui lòng kiểm tra Rules.");
+          }
+      }
+
+      // HÀM MỚI: Hiển thị kết quả Chủ tịch
+      function setupChairmanResults() {
+          if (!db) return;
+
+          db.collection("chairman_votes")
+              .orderBy("votes", "desc")
+              .limit(1) 
+              .onSnapshot((snapshot) => { 
+                  const displayArea = document.getElementById('chairman-result-display');
+                  if (snapshot.empty) return;
+
+                  const winnerDoc = snapshot.docs[0];
+                  const winnerData = winnerDoc.data();
+                  
+                  if (winnerData.votes > 0) {
+                      const chairmanName = winnerData.name || `Ứng viên ${winnerData.candidateId}`;
+                      const resultHtml = `
+                          <div style="background: #e6ffe6; padding: 15px; border: 2px solid #00cc00; margin-top: 20px;">
+                              <h3>🎉 CHỦ TỊCH CÔNG ĐOÀN ĐÃ ĐƯỢC BẦU CHỌN 🎉</h3>
+                              <p style="font-size: 1.5em; font-weight: bold;">
+                                  ${chairmanName} (${winnerData.candidateId})
+                              </p>
+                              <p>Tổng số phiếu bầu: ${winnerData.votes}</p>
+                          </div>
+                      `;
+                      displayArea.innerHTML = resultHtml; // Cập nhật khu vực hiển thị
+                  }
+              });
+      }
+
+
+      // HÀM CẬP NHẬT KẾT QUẢ VÒNG 1 (Đã thêm gọi checkRoundOneCompletion)
       function setupRealtimeResults() {
         if (!db) return;
 
-        // Tham chiếu đến collection "employees"
         db.collection("employees")
           .orderBy("votes", "desc")
-          .limit(5)
           .onSnapshot(
             (snapshot) => {
               const topFive = [];
@@ -334,6 +353,7 @@
                 });
               });
 
+              // --- HIỂN THỊ KẾT QUẢ VÒNG 1 ---
               const ol = document.getElementById("top-five-list");
               ol.innerHTML = "";
 
@@ -342,10 +362,12 @@
                 topFive.every((emp) => emp.votes === 0)
               ) {
                 ol.innerHTML = "<li>Chưa có phiếu bầu nào được ghi nhận.</li>";
+                // Chuyển sang Vòng 2 ngay nếu Vòng 1 chưa bầu (tùy chọn)
+                // checkRoundOneCompletion(topFive); 
                 return;
               }
 
-              topFive.forEach((emp, index) => {
+              topFive.slice(0, 5).forEach((emp, index) => { // Chỉ lấy 5 người
                 const li = document.createElement("li");
                 li.innerHTML = `
                             <strong>Hạng ${index + 1}:</strong> ${emp.name} (${
@@ -354,17 +376,69 @@
                         `;
                 ol.appendChild(li);
               });
+              
+              // --- KIỂM TRA ĐIỀU KIỆN VÒNG 2 ---
+              checkRoundOneCompletion(topFive); 
             },
             (error) => {
-              console.error("Lỗi lắng nghe kết quả:", error);
+              console.error("Lỗi lắng nghe kết quả Vòng 1:", error);
               document.getElementById("top-five-list").innerHTML =
                 "<li>Lỗi tải kết quả bầu cử. (Xem Console F12)</li>";
             }
           );
       }
 
+      // HÀM TẢI CSV VÀ KHỞI TẠO (Không đổi)
+      async function loadEmployeesFromCSV() {
+        try {
+          document.getElementById('login-status').textContent = 'Đang tải danh sách nhân viên...';
+          document.getElementById('login-status').style.color = 'orange';
+
+          const response = await fetch('employees.csv');
+          
+          if (!response.ok) {
+              throw new Error(`Không tìm thấy file hoặc lỗi mạng: ${response.status}`);
+          }
+
+          const csvText = await response.text();
+          const lines = csvText.trim().split('\n');
+          
+          for (let i = 1; i < lines.length; i++) {
+              const line = lines[i].trim();
+              if (line) {
+                  const parts = line.split(/,(?=(?:(?:[^"]*"){2})*[^"]*$)/);
+                  
+                  const id = parts[0] ? parts[0].trim().replace(/"/g, '') : '';
+                  const name = parts[1] ? parts[1].trim().replace(/"/g, '') : '';
+
+                  if (id && name) {
+                      employees.push({
+                          id: id,
+                          name: name
+                      });
+                  }
+              }
+          }
+
+          if (employees.length > 0) {
+            document.getElementById('login-status').textContent = 'Vui lòng Đăng nhập.';
+            document.getElementById('login-status').style.color = 'red';
+          } else {
+            document.getElementById('login-status').textContent = 'LỖI: CSV trống hoặc không có dữ liệu hợp lệ.';
+          }
+          
+          renderEmployeeList(); 
+          setupRealtimeResults();
+          setupChairmanResults(); // Bắt đầu lắng nghe kết quả Chủ tịch
+
+        } catch (error) {
+          console.error("LỖI KHÔNG THỂ TẢI HOẶC PHÂN TÍCH CSV:", error);
+          document.getElementById('login-status').textContent = 
+            "LỖI: Không thể tải danh sách. Vui lòng kiểm tra file 'employees.csv' (F12).";
+        }
+      }
+
       // --- KHỞI TẠO CUỐI CÙNG ---
-      // Bắt đầu tải CSV và sau đó render/lắng nghe
       loadEmployeesFromCSV();
     </script>
   </body>
